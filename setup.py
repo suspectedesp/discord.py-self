@@ -39,15 +39,24 @@ extras_require = {
     'docs': [
         'sphinx==4.4.0',
         'sphinxcontrib_trio==1.1.2',
-        'sphinxcontrib-websupport',
+        # TODO: bump these when migrating to a newer Sphinx version
+        'sphinxcontrib-websupport==1.2.4',
+        'sphinxcontrib-applehelp==1.0.4',
+        'sphinxcontrib-devhelp==1.0.2',
+        'sphinxcontrib-htmlhelp==2.0.1',
+        'sphinxcontrib-jsmath==1.0.1',
+        'sphinxcontrib-qthelp==1.0.3',
+        'sphinxcontrib-serializinghtml==1.1.5',
         'typing-extensions>=4.3,<5',
+        'sphinx-inline-tabs==2023.4.21',
     ],
     'speed': [
         'orjson>=3.5.4',
-        'aiodns>=1.1',
+        'aiodns>=1.1; sys_platform != "win32"',
         'Brotli',
         'cchardet==2.1.7; python_version < "3.10"',
         'mmh3>=2.5',
+        'zstandard>=0.23.0',
     ],
     'test': [
         'coverage[toml]',
@@ -56,12 +65,14 @@ extras_require = {
         'pytest-cov',
         'pytest-mock',
         'typing-extensions>=4.3,<5',
+        'tzdata; sys_platform == "win32"',
     ],
 }
 
 setup(
     name='discord.py-self' if prefix == 'discord' else f'{prefix}.py',
     author='Dolfies',
+    author_email='me@dolfi.es',
     url='https://github.com/dolfies/discord.py-self',
     project_urls={
         'Documentation': 'https://discordpy-self.readthedocs.io/en/latest/',
@@ -88,6 +99,9 @@ setup(
         'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
+        'Programming Language :: Python :: 3.13',
         'Topic :: Internet',
         'Topic :: Software Development :: Libraries',
         'Topic :: Software Development :: Libraries :: Python Modules',

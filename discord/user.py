@@ -282,7 +282,7 @@ class BaseUser(_UserTag):
         )
 
     def __str__(self) -> str:
-        if self.discriminator == '0':
+        if self.is_pomelo():
             return self.name
         return f'{self.name}#{self.discriminator}'
 
@@ -381,7 +381,7 @@ class BaseUser(_UserTag):
     @property
     def default_avatar(self) -> Asset:
         """:class:`Asset`: Returns the default avatar for a given user."""
-        if self.discriminator == '0':
+        if self.is_pomelo():
             avatar_id = (self.id >> 22) % 6
         else:
             avatar_id = int(self.discriminator) % 5
@@ -562,7 +562,7 @@ class BaseUser(_UserTag):
 
         .. versionadded:: 2.1
         """
-        return self.discriminator == '0'
+        return int(self.discriminator) == 0
 
     @property
     def relationship(self) -> Optional[Relationship]:
@@ -1142,10 +1142,11 @@ class User(BaseUser, discord.abc.Connectable, discord.abc.Messageable):
         ring: bool = True,
     ) -> ConnectReturn:
         channel = await self._get_channel()
-        call = channel.call
-        if call is None and ring:
+        ret = await super().connect(timeout=timeout, reconnect=reconnect, cls=cls, _channel=channel)
+
+        if ring:
             await channel._initial_ring()
-        return await super().connect(timeout=timeout, reconnect=reconnect, cls=cls, _channel=channel)
+        return ret
 
     async def create_dm(self) -> DMChannel:
         """|coro|
