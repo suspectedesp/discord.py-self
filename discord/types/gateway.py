@@ -178,8 +178,7 @@ class MessageDeleteBulkEvent(TypedDict):
     guild_id: NotRequired[Snowflake]
 
 
-class MessageUpdateEvent(Message):
-    channel_id: Snowflake
+MessageUpdateEvent = MessageCreateEvent
 
 
 class MessageReactionAddEvent(TypedDict):
@@ -253,6 +252,7 @@ ChannelCreateEvent = ChannelUpdateEvent = ChannelDeleteEvent = _ChannelEvent
 class ChannelRecipientEvent(TypedDict):
     channel_id: Snowflake
     user: PartialUser
+    nick: str
 
 
 class ChannelPinsUpdateEvent(TypedDict):
@@ -569,11 +569,19 @@ class PartialUpdateChannel(TypedDict):
     last_pin_timestamp: NotRequired[Optional[str]]
 
 
-class PassiveUpdateEvent(TypedDict):
+class PassiveUpdateV1Event(TypedDict):
     guild_id: Snowflake
     channels: List[PartialUpdateChannel]
     voice_states: NotRequired[List[VoiceState]]
     members: NotRequired[List[MemberWithUser]]
+
+
+class PassiveUpdateV2Event(TypedDict):
+    guild_id: Snowflake
+    removed_voice_states: List[Snowflake]
+    updated_channels: List[PartialUpdateChannel]
+    members: List[MemberWithUser]
+    updated_voice_states: List[VoiceState]
 
 
 class GuildApplicationCommandIndexUpdateEvent(TypedDict):

@@ -72,7 +72,15 @@ from .utils import MISSING
 from .object import Object, OLDEST_OBJECT
 from .backoff import ExponentialBackoff
 from .webhook import Webhook
-from .application import Application, ApplicationActivityStatistics, Company, EULA, PartialApplication, UnverifiedApplication
+from .application import (
+    Application,
+    ApplicationActivityStatistics,
+    Company,
+    EULA,
+    DetectableApplication,
+    PartialApplication,
+    UnverifiedApplication,
+)
 from .stage_instance import StageInstance
 from .threads import Thread
 from .sticker import GuildSticker, StandardSticker, StickerPack, _sticker_factory
@@ -82,7 +90,7 @@ from .team import Team
 from .billing import PaymentSource, PremiumUsage
 from .subscriptions import Subscription, SubscriptionItem, SubscriptionInvoice
 from .payments import Payment
-from .promotions import PricingPromotion, Promotion, TrialOffer
+from .promotions import PricingPromotion, Promotion, TrialOffer, UserOffer
 from .entitlements import Entitlement, Gift
 from .store import SKU, StoreListing, SubscriptionPlan
 from .guild_premium import *
@@ -369,7 +377,9 @@ class Client:
             if status is None:
                 status = getattr(state.settings, 'status', None) or Status.unknown
             _log.debug('Setting initial presence to %s %s', status, activities)
-            self.loop.create_task(self.change_presence(activities=activities, status=status))
+            self.loop.create_task(
+                self.change_presence(activities=activities, status=status, edit_settings=self._sync_presences)
+            )
 
     @property
     def latency(self) -> float:
@@ -2423,69 +2433,6 @@ class Client:
         data = await self.http.get_user(user_id)
         return User(state=self._connection, data=data)
 
-    @overload
-    async def fetch_user_named(self, user: str, /) -> User:
-        ...
-
-    @overload
-    async def fetch_user_named(self, username: str, discriminator: str, /) -> User:
-        ...
-
-    async def fetch_user_named(self, *args: str) -> User:
-        """|coro|
-
-        Retrieves a :class:`discord.User` based on their name or legacy username.
-        You do not have to share any guilds with the user to get this information,
-        however you must be able to add them as a friend.
-
-        This function can be used in multiple ways.
-
-        .. versionadded:: 2.1
-
-        .. code-block:: python
-
-            # Passing a username
-            await client.fetch_user_named('jake')
-
-            # Passing a legacy user:
-            await client.fetch_user_named('Jake#0001')
-
-            # Passing a legacy username and discriminator:
-            await client.fetch_user_named('Jake', '0001')
-
-        Parameters
-        -----------
-        user: :class:`str`
-            The user to send the friend request to.
-        username: :class:`str`
-            The username of the user to send the friend request to.
-        discriminator: :class:`str`
-            The discriminator of the user to send the friend request to.
-
-        Raises
-        -------
-        Forbidden
-            Not allowed to send a friend request to this user.
-        HTTPException
-            Fetching the user failed.
-        TypeError
-            More than 2 parameters or less than 1 parameter was passed.
-
-        Returns
-        --------
-        :class:`discord.User`
-            The user you requested.
-        """
-        if len(args) == 1:
-            username, _, discrim = args[0].partition('#')
-        elif len(args) == 2:
-            username, discrim = args
-        else:
-            raise TypeError(f'fetch_user_named() takes 1 or 2 arguments but {len(args)} were given')
-
-        data = await self.http.get_user_named(username, discrim)
-        return User(state=self._connection, data=data)
-
     async def fetch_user_profile(
         self,
         user_id: int,
@@ -2494,14 +2441,15 @@ class Client:
         with_mutual_guilds: bool = True,
         with_mutual_friends_count: bool = False,
         with_mutual_friends: bool = True,
+        friend_token: str = MISSING,
     ) -> UserProfile:
         """|coro|
 
         Retrieves a :class:`.UserProfile` based on their user ID.
 
-        You must share a guild, be friends with this user,
-        or have an incoming friend request from them to
-        get this information (unless the user is a bot).
+        You must provide a valid ``friend_token``, share a guild with,
+        be friends with, or have an incoming friend request from this
+        user to get this information, unless the user is a bot.
 
         .. versionchanged:: 2.0
 
@@ -2523,17 +2471,19 @@ class Client:
             .. versionadded:: 2.0
         with_mutual_friends: :class:`bool`
             Whether to fetch mutual friends.
-            This fills in :attr:`.UserProfile.mutual_friends` and :attr:`.UserProfile.mutual_friends_count`,
-            but requires an extra API call.
+            This fills in :attr:`.UserProfile.mutual_friends` and :attr:`.UserProfile.mutual_friends_count`.
 
             .. versionadded:: 2.0
+        friend_token: :class:`str`
+            The friend token to use for fetching the profile.
+
+            .. versionadded:: 2.1
 
         Raises
         -------
         NotFound
             A user with this ID does not exist.
-        Forbidden
-            You do not have a mutual with this user, and and the user is not a bot.
+            You do not have a mutual with this user and the user is not a bot.
         HTTPException
             Fetching the profile failed.
 
@@ -2544,13 +2494,14 @@ class Client:
         """
         state = self._connection
         data = await state.http.get_user_profile(
-            user_id, with_mutual_guilds=with_mutual_guilds, with_mutual_friends_count=with_mutual_friends_count
+            user_id,
+            with_mutual_guilds=with_mutual_guilds,
+            with_mutual_friends_count=with_mutual_friends_count,
+            with_mutual_friends=with_mutual_friends,
+            friend_token=friend_token or None,
         )
-        mutual_friends = None
-        if with_mutual_friends and not data['user'].get('bot', False):
-            mutual_friends = await state.http.get_mutual_friends(user_id)
 
-        return UserProfile(state=state, data=data, mutual_friends=mutual_friends)
+        return UserProfile(state=state, data=data)
 
     async def fetch_channel(self, channel_id: int, /) -> Union[GuildChannel, PrivateChannel, Thread]:
         """|coro|
@@ -3084,6 +3035,32 @@ class Client:
         data = await state.http.get_friend_suggestions()
         return [FriendSuggestion(state=state, data=d) for d in data]
 
+    async def friend_token(self) -> str:
+        """|coro|
+
+        Retrieves your friend token.
+
+        These can be used to fetch the user's profile without a mutual
+        and add the user as a friend regardless of their friend request settings.
+
+        To share, append it to the user's URL like so:
+        ``https://discord.com/users/{user.id}?friend_token={friend_token}``.
+
+        .. versionadded:: 2.1
+
+        Raises
+        -------
+        HTTPException
+            Retrieving your friend token failed.
+
+        Returns
+        --------
+        :class:`str`
+            Your friend token.
+        """
+        data = await self.http.get_friend_token()
+        return data['friend_token']
+
     async def fetch_country_code(self) -> str:
         """|coro|
 
@@ -3170,13 +3147,10 @@ class Client:
         -----------
         \*recipients: :class:`~discord.abc.Snowflake`
             An argument :class:`list` of :class:`discord.User` to have in
-            your group. Groups cannot be created with only one person,
-            but they can be created with zero people.
+            your group.
 
         Raises
         -------
-        TypeError
-            Only one recipient was given.
         HTTPException
             Failed to create the group direct message.
 
@@ -3185,11 +3159,13 @@ class Client:
         :class:`.GroupChannel`
             The new group channel.
         """
-        if len(recipients) == 1:
-            raise TypeError('Cannot create a group with only one recipient')
+        state = self._connection
 
         users: List[_Snowflake] = [u.id for u in recipients]
-        state = self._connection
+        if len(users) == 1:
+            # To create a group DM with one user, the client user must be included
+            users.append(state.self_id)  # type: ignore # user is always present when logged in
+
         data = await state.http.start_group(users)
         return GroupChannel(me=self.user, data=data, state=state)  # type: ignore # user is always present when logged in
 
@@ -3287,12 +3263,17 @@ class Client:
         data = await state.http.get_my_applications(with_team_applications=with_team_applications)
         return [Application(state=state, data=d) for d in data]
 
-    async def detectable_applications(self) -> List[PartialApplication]:
+    async def detectable_applications(self) -> List[DetectableApplication]:
         """|coro|
 
         Retrieves the list of applications detectable by the Discord client.
 
         .. versionadded:: 2.0
+
+        .. versionchanged:: 2.1
+
+            The method now returns a list of :class:`.DetectableApplication`
+            instead of :class:`.PartialApplication` due to an API change.
 
         Raises
         -------
@@ -3301,12 +3282,12 @@ class Client:
 
         Returns
         -------
-        List[:class:`.PartialApplication`]
+        List[:class:`.DetectableApplication`]
             The applications detectable by the Discord client.
         """
         state = self._connection
         data = await state.http.get_detectable_applications()
-        return [PartialApplication(state=state, data=d) for d in data]
+        return [DetectableApplication(state=state, data=d) for d in data]
 
     async def fetch_application(self, application_id: int, /) -> Application:
         """|coro|
@@ -4162,6 +4143,37 @@ class Client:
         )
         return [Promotion(state=state, data=d) for d in data]
 
+    async def user_offer(self, *, payment_gateway: Optional[PaymentGateway] = None) -> UserOffer:
+        """|coro|
+
+        Retrieves the current user offer for your account.
+        This includes the trial offer and discount offer.
+
+        .. versionadded:: 2.1
+
+        Parameters
+        -----------
+        payment_gateway: Optional[:class:`.PaymentGateway`]
+            The payment gateway to fetch the user offer for.
+            Used to fetch user offers for :attr:`.PaymentGateway.apple`
+            and :attr:`.PaymentGateway.google` mobile platforms.
+
+        Raises
+        -------
+        NotFound
+            You do not have a user offer.
+        HTTPException
+            Retrieving the user offer failed.
+
+        Returns
+        -------
+        :class:`.UserOffer`
+            The user offer for your account.
+        """
+        state = self._connection
+        data = await state.http.get_user_offer(payment_gateway=int(payment_gateway) if payment_gateway else None)
+        return UserOffer(data=data, state=state)
+
     async def trial_offer(self) -> TrialOffer:
         """|coro|
 
@@ -4988,6 +5000,27 @@ class Client:
         data = await self._connection.http.get_premium_usage()
         return PremiumUsage(data=data)
 
+    async def checkout_recovery(self) -> bool:
+        """|coro|
+
+        Checks whether the client should prompt the user to
+        continue their premium purchase.
+
+        .. versionadded:: 2.1
+
+        Raises
+        ------
+        HTTPException
+            Retrieving the checkout recovery eligibility failed.
+
+        Returns
+        -------
+        :class:`bool`
+            Whether the client should prompt the user for checkout recovery.
+        """
+        data = await self._connection.http.checkout_recovery_eligibility()
+        return data.get('is_eligible', False)
+
     async def recent_mentions(
         self,
         *,
@@ -5146,6 +5179,51 @@ class Client:
         state = self._connection
         data = await state.http.get_guild_affinities()
         return [GuildAffinity(data=d, state=state) for d in data['guild_affinities']]
+
+    async def channel_affinities(self) -> List[ChannelAffinity]:
+        """|coro|
+
+        Retrieves the channel affinities for the current user.
+
+        Channel affinities are the channels you interact with most frecently.
+
+        .. versionadded:: 2.1
+
+        Raises
+        ------
+        HTTPException
+            Retrieving the channel affinities failed.
+
+        Returns
+        -------
+        List[:class:`.ChannelAffinity`]
+            The channel affinities.
+        """
+        state = self._connection
+        data = await state.http.get_channel_affinities()
+        return [ChannelAffinity(data=d, state=state) for d in data['channel_affinities']]
+
+    async def premium_affinities(self) -> List[User]:
+        """|coro|
+
+        Retrieves a list of friends who have a premium subscription,
+        used to incentivize the user to purchase one as well.
+
+        .. versionadded:: 2.1
+
+        Raises
+        ------
+        HTTPException
+            Retrieving the premium affinities failed.
+
+        Returns
+        -------
+        List[:class:`discord.User`]
+            The users who share a premium subscription with the current user.
+        """
+        state = self._connection
+        data = await state.http.get_premium_affinity()
+        return [state.store_user(d) for d in data]
 
     async def join_active_developer_program(self, *, application: Snowflake, channel: Snowflake) -> int:
         """|coro|
@@ -5409,7 +5487,7 @@ class Client:
         data = await state.http.join_hub(email, guild.id, code)
         return state.create_guild(data['guild'])
 
-    async def pomelo_suggestion(self) -> str:
+    async def pomelo_suggestion(self, global_name: Optional[str] = MISSING) -> str:
         """|coro|
 
         Gets the suggested pomelo username for your account.
@@ -5418,9 +5496,15 @@ class Client:
 
         .. note::
 
-            This method requires you to be in the pomelo rollout.
+            This method requires you to be in the pomelo rollout if ``global_name`` is not provided.
 
         .. versionadded:: 2.1
+
+        Parameters
+        -----------
+        global_name: Optional[:class:`str`]
+            The global name to suggest a username for.
+            Defaults to the current user's global name, if authenticated.
 
         Raises
         -------
@@ -5432,17 +5516,17 @@ class Client:
         :class:`str`
             The suggested username.
         """
-        data = await self.http.pomelo_suggestion()
+        http = self.http
+        if http.token and global_name is MISSING:
+            data = await http.pomelo_suggestion()
+        else:
+            data = await http.pomelo_suggestion_unauthed(global_name)
         return data['username']
 
     async def check_pomelo_username(self, username: str) -> bool:
         """|coro|
 
         Checks if a pomelo username is taken.
-
-        .. note::
-
-            This method requires you to be in the pomelo rollout.
 
         .. versionadded:: 2.1
 
@@ -5461,5 +5545,9 @@ class Client:
         :class:`bool`
             Whether the username is taken.
         """
-        data = await self.http.pomelo_attempt(username)
+        http = self.http
+        if http.token:
+            data = await http.pomelo_attempt(username)
+        else:
+            data = await http.pomelo_attempt_unauthed(username)
         return data['taken']

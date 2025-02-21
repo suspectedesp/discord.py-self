@@ -30,6 +30,7 @@ import copy
 import datetime
 import logging
 from typing import (
+    ClassVar,
     Dict,
     Final,
     Optional,
@@ -237,6 +238,7 @@ class MemberSidebar:
         'cache',
         'loop',
         'safe_override',
+        '_limit_override',
         'ranges',
         'subscribing',
         'buffer',
@@ -260,6 +262,7 @@ class MemberSidebar:
         self.delay = delay
         self.loop = loop
         self.safe_override = False  # >.<
+        self._limit_override: Optional[int] = None
 
         self.channels = [str(channel.id) for channel in (channels or self.get_channels(1 if chunk else 5))]
         self.ranges = self.get_ranges()
@@ -269,7 +272,14 @@ class MemberSidebar:
         self.waiters: List[asyncio.Future[Optional[List[Member]]]] = []
 
     @property
+    def manual_override(self) -> bool:
+        return self._limit_override is not None
+
+    @property
     def limit(self) -> int:
+        if self._limit_override is not None:
+            return self._limit_override
+
         guild = self.guild
         members = guild._presence_count if guild._offline_members_hidden else guild._member_count or 0
         # Ensure groups are accounted for
@@ -287,7 +297,7 @@ class MemberSidebar:
     def amalgamate(original: Tuple[int, int], value: Tuple[int, int]) -> Tuple[int, int]:
         return original[0], value[1] - 99
 
-    def get_ranges(self) -> List[Tuple[int, int]]:
+    def get_ranges(self, *, start: int = 0) -> List[Tuple[int, int]]:
         chunk = 100
         end = 99
         amount = self.limit
@@ -296,7 +306,7 @@ class MemberSidebar:
 
         ceiling = ceil(amount / chunk) * chunk
         ranges = []
-        for i in range(0, int(ceiling / chunk)):
+        for i in range(int(start / chunk), int(ceiling / chunk)):
             min = i * chunk
             max = min + end
             ranges.append((min, max))
@@ -326,6 +336,14 @@ class MemberSidebar:
                 ret.append(current)
 
         return ret
+
+    def handle_manual_override(self, group_members: int) -> None:
+        # Certain guilds like MidJourney have their member list groups manually set
+        # In these cases, the online group is removed, and most online members are not retrievable
+        # We must update the limit to the "real" online count, and recalculate the ranges
+        self._limit_override = group_members
+        if self.ranges:
+            self.ranges = self.get_ranges(start=self.ranges[0][0])
 
     def get_channels(self, amount: int) -> List[abcSnowflake]:
         guild = self.guild
@@ -423,11 +441,16 @@ class MemberSidebar:
             if not self.subscribing and not requests:
                 break
 
+            request_values = list(requests.values())
+            all_possible_ranges = range(request_values[0][0][0], request_values[-1][-1][1] + 1)
+
             if not requests:
                 raise ClientException('Failed to automatically choose channels; please specify them manually')
 
             def predicate(data):
-                return int(data['guild_id']) == guild.id and any(op['op'] == 'SYNC' for op in data['ops'])
+                return int(data['guild_id']) == guild.id and any(
+                    op['op'] == 'SYNC' and op['range'][0] in all_possible_ranges for op in data['ops']
+                )
 
             await state.subscriptions.subscribe_to_channels(guild, requests, replace=True)
 
@@ -446,6 +469,11 @@ class MemberSidebar:
 
                     # Sometimes servers require safe mode (they used to have 75k+ members)
                     # so if we don't get a response we force safe mode and try again
+                    _log.debug(
+                        'Forcing member list scraping safe mode for guild ID %s (member count: %s).',
+                        guild.id,
+                        guild._member_count,
+                    )
                     self.safe_override = True
                     self.ranges = self.get_ranges()
                     await self.scrape()
@@ -473,7 +501,7 @@ class GuildSubscriptions:
 
     The client is automatically subscribed to all guilds with < 75k members on connect. For guilds the client is not subscribed to,
     it will not receive non-stateful events (e.g. MESSAGE_CREATE, MESSAGE_UPDATE, MESSAGE_DELETE, etc.).
-    Additionally, it will receive the PASSIVE_UPDATE_V1 event to keep voice states and channel unreads up-to-date.
+    Additionally, it will receive the PASSIVE_UPDATE_V2 event to keep voice states and channel unreads up-to-date.
 
     Once a client subscribes to the ``typing`` feature, it is considered subscribed to that guild indefinitely. On the first subscribe,
     it will receive a GUILD_CREATE event (for some reason). If subscribing to other features/members without having subscribed to the
@@ -867,6 +895,8 @@ class ClientStatus:
 class Presence:
     __slots__ = ('client_status', 'activities')
 
+    _OFFLINE: ClassVar[Self] = MISSING
+
     def __init__(self, data: gw.BasePresenceUpdate, state: ConnectionState, /) -> None:
         self.client_status: ClientStatus = ClientStatus(data['status'], data.get('client_status'))
         self.activities: Tuple[ActivityTypes, ...] = tuple(create_activity(d, state) for d in data['activities'])
@@ -895,10 +925,13 @@ class Presence:
 
     @classmethod
     def _offline(cls) -> Self:
-        self = cls.__new__(cls)  # bypass __init__
-        self.client_status = ClientStatus()
-        self.activities = ()
-        return self
+        if cls._OFFLINE is MISSING:
+            self = cls.__new__(cls)  # bypass __init__
+            self.client_status = ClientStatus()
+            self.activities = ()
+            cls._OFFLINE = self
+
+        return cls._OFFLINE
 
     @classmethod
     def _copy(cls, presence: Self, /) -> Self:
@@ -1371,6 +1404,27 @@ class ConnectionState:
         poll._handle_vote(answer_id, added, self_voted)
         return poll
 
+    def _update_poll_results(self, from_: Message, to: Union[Message, int]) -> None:
+        if isinstance(to, Message):
+            cached = self._get_message(to.id)
+        elif isinstance(to, int):
+            cached = self._get_message(to)
+
+            if cached is None:
+                return
+
+            to = cached
+        else:
+            return
+
+        if to.poll is None:
+            return
+
+        to.poll._update_results_from_message(from_)
+
+        if cached is not None and cached.poll:
+            cached.poll._update_results_from_message(from_)
+
     def subscribe_guild(
         self, guild: Guild, typing: bool = True, activities: bool = True, threads: bool = True, member_updates: bool = True
     ) -> Coroutine:
@@ -1551,7 +1605,7 @@ class ConnectionState:
         self.session_type = data.get('session_type', 'normal')
         self.auth_session_id = data.get('auth_session_id_hash')
         self.connections = {c['id']: Connection(state=self, data=c) for c in data.get('connected_accounts', [])}
-        self.pending_payments = {int(p['id']): Payment(state=self, data=p) for p in data.get('pending_payments', [])}
+        self.pending_payments = {int(p['id']): Payment(state=self, data=p) for p in (data.get('pending_payments') or [])}
         self.required_action = try_enum(RequiredActionType, data['required_action']) if 'required_action' in data else None
         self.friend_suggestion_count = data.get('friend_suggestion_count', 0)
 
@@ -1648,15 +1702,18 @@ class ConnectionState:
     def parse_resumed(self, data: gw.ResumedEvent) -> None:
         self.dispatch('resumed')
 
-    def parse_passive_update_v1(self, data: gw.PassiveUpdateEvent) -> None:
-        # PASSIVE_UPDATE_V1 is sent for large guilds you are not subscribed to
-        # in order to keep their read and voice states up-to-date; it replaces CHANNEL_UNREADS_UPDATE
+    def parse_passive_update_v2(self, data: gw.PassiveUpdateV2Event) -> None:
+        # PASSIVE_UPDATE_V2 is sent for large guilds you are not subscribed to
+        # in order to keep their members/read and voice states up-to-date; it replaces CHANNEL_UNREADS_UPDATE and PASSIVE_UPDATE_V1
         guild = self._get_guild(int(data['guild_id']))
         if not guild:
-            _log.debug('PASSIVE_UPDATE_V1 referencing an unknown guild ID: %s. Discarding.', data['guild_id'])
+            _log.debug('PASSIVE_UPDATE_V2 referencing an unknown guild ID: %s. Discarding.', data['guild_id'])
             return
 
-        for channel_data in data.get('channels', []):
+        for user_id in map(int, data.get('removed_voice_states', [])):
+            guild._voice_states.pop(user_id, None)
+
+        for channel_data in data.get('updated_channels', []):
             channel = guild.get_channel(int(channel_data['id']))
             if not channel:
                 continue
@@ -1664,14 +1721,23 @@ class ConnectionState:
             if 'last_pin_timestamp' in channel_data and hasattr(channel, 'last_pin_timestamp'):
                 channel.last_pin_timestamp = utils.parse_time(channel_data['last_pin_timestamp'])  # type: ignore
 
-        # Apparently, voice states not being in the payload means there are no longer any voice states
-        guild._voice_states = {}
         members = {int(m['user']['id']): m for m in data.get('members', [])}
-        for voice_state in data.get('voice_states', []):
+
+        cache_flags = self.member_cache_flags
+        for k, member_data in members.items():
+            member = guild.get_member(k)
+            if member is not None:
+                member._update(member_data)
+            else:
+                if cache_flags.voice:
+                    member = Member(data=member_data, guild=guild, state=self)
+                    guild._add_member(member)
+
+        for voice_state in data.get('updated_voice_states', []):
             user_id = int(voice_state['user_id'])
-            member = members.get(user_id)
-            if member:
-                voice_state['member'] = member
+            member_data = members.get(user_id)
+            if member_data:
+                voice_state['member'] = member_data
             guild._update_voice_state(voice_state, utils._get_as_snowflake(voice_state, 'channel_id'))
 
     def parse_message_create(self, data: gw.MessageCreateEvent) -> None:
@@ -1723,17 +1789,21 @@ class ConnectionState:
                 self._messages.remove(msg)  # type: ignore
 
     def parse_message_update(self, data: gw.MessageUpdateEvent) -> None:
-        raw = RawMessageUpdateEvent(data)
-        message = self._get_message(raw.message_id)
-        if message is not None:
-            older_message = copy.copy(message)
+        channel, _ = self._get_guild_channel(data)
+        # channel would be the correct type here
+        updated_message = Message(channel=channel, data=data, state=self)  # type: ignore
+
+        raw = RawMessageUpdateEvent(data=data, message=updated_message)
+        cached_message = self._get_message(updated_message.id)
+        if cached_message is not None:
+            older_message = copy.copy(cached_message)
             raw.cached_message = older_message
             self.dispatch('raw_message_edit', raw)
-            message._update(data)
+            cached_message._update(data)
             # Coerce the `after` parameter to take the new updated Member
             # ref: #5999
-            older_message.author = message.author
-            self.dispatch('message_edit', older_message, message)
+            older_message.author = updated_message.author
+            self.dispatch('message_edit', older_message, updated_message)
         else:
             self.dispatch('raw_message_edit', raw)
 
@@ -2251,6 +2321,8 @@ class ConnectionState:
 
         user = self.store_user(data['user'])
         channel.recipients.append(user)  # type: ignore
+        if 'nick' in data:
+            channel.nicks[user] = data['nick']  # type: ignore
         self.dispatch('group_join', channel, user)
 
     def parse_channel_recipient_remove(self, data: gw.ChannelRecipientEvent) -> None:
@@ -2707,10 +2779,23 @@ class ConnectionState:
                 any(group['id'] == 'offline' for group in data['groups']) or data['member_count'] == data['online_count']
             ):
                 # The guild has offline members hidden
-                print(f'Detected guild {guild} with erroneous offline members')
+                _log.debug(f'Detected guild {guild} with erroneous offline members.')
                 return
             request.add_members(members)
             # request.add_members(members + to_add)
+
+            # Attempt to detect Discord overriding the member list
+            if (
+                not request.chunk
+                and not request.manual_override
+                and data['online_count'] > 0
+                and guild._true_online_count < data['online_count']
+                and 'online' not in [group['id'] for group in data['groups']]
+            ):
+                _log.debug(
+                    f'Detected guild {guild} with manually overriden member list groups: online members not cached by the Gateway.'
+                )
+                request.handle_manual_override(guild._true_online_count)
         else:
             for member in members:  # + to_add:
                 guild._add_member(member)
@@ -3713,8 +3798,14 @@ class ConnectionState:
                 'name': 'Nitro',
                 'icon': None,
                 'description': '',
-                'verify_key': '93661a9eefe452d12f51e129e8d9340e7ca53a770158c0ec7970e701534b7420',
                 'type': None,
+                'is_monetized': False,
+                'is_verified': False,
+                'is_discoverable': False,
+                'hook': True,
+                'storefront_available': False,
+                'verify_key': '93661a9eefe452d12f51e129e8d9340e7ca53a770158c0ec7970e701534b7420',
+                'flags': 0,
             },
         )
 

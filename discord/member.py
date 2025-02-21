@@ -259,7 +259,7 @@ class Member(discord.abc.Messageable, discord.abc.Connectable, _UserTag):
         "Nitro boost" on the guild, if available. This could be ``None``.
     timed_out_until: Optional[:class:`datetime.datetime`]
         An aware datetime object that specifies the date and time in UTC that the member's time out will expire.
-        This will be set to ``None`` if the user is not timed out.
+        This will be set to ``None`` or a time in the past if the user is not timed out.
 
         .. versionadded:: 2.0
     """
@@ -291,6 +291,7 @@ class Member(discord.abc.Messageable, discord.abc.Connectable, _UserTag):
         avatar: Optional[Asset]
         avatar_decoration: Optional[Asset]
         avatar_decoration_sku_id: Optional[int]
+        avatar_decoration_expires_at: Optional[datetime.datetime]
         note: Note
         relationship: Optional[Relationship]
         is_friend: Callable[[], bool]
@@ -1112,6 +1113,7 @@ class Member(discord.abc.Messageable, discord.abc.Connectable, _UserTag):
         with_mutual_guilds: bool = True,
         with_mutual_friends_count: bool = False,
         with_mutual_friends: bool = True,
+        friend_token: str = MISSING,
     ) -> MemberProfile:
         """|coro|
 
@@ -1131,14 +1133,13 @@ class Member(discord.abc.Messageable, discord.abc.Connectable, _UserTag):
             .. versionadded:: 2.0
         with_mutual_friends: :class:`bool`
             Whether to fetch mutual friends.
-            This fills in :attr:`MemberProfile.mutual_friends` and :attr:`MemberProfile.mutual_friends_count`,
-            but requires an extra API call.
+            This fills in :attr:`MemberProfile.mutual_friends` and :attr:`MemberProfile.mutual_friends_count`.
 
             .. versionadded:: 2.0
 
         Raises
         -------
-        Forbidden
+        NotFound
             Not allowed to fetch this profile.
         HTTPException
             Fetching the profile failed.
@@ -1155,4 +1156,5 @@ class Member(discord.abc.Messageable, discord.abc.Connectable, _UserTag):
             with_mutual_guilds=with_mutual_guilds,
             with_mutual_friends_count=with_mutual_friends_count,
             with_mutual_friends=with_mutual_friends,
+            friend_token=friend_token,
         )

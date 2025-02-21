@@ -100,6 +100,9 @@ from .enums import Locale, try_enum
 __all__ = (
     'oauth_url',
     'snowflake_time',
+    'snowflake_worker_id',
+    'snowflake_process_id',
+    'snowflake_increment',
     'time_snowflake',
     'find',
     'get',
@@ -117,7 +120,7 @@ __all__ = (
 )
 
 DISCORD_EPOCH = 1420070400000
-DEFAULT_FILE_SIZE_LIMIT_BYTES = 26214400
+DEFAULT_FILE_SIZE_LIMIT_BYTES = 10485760
 
 _log = logging.getLogger(__name__)
 
@@ -330,23 +333,25 @@ def parse_date(date: Optional[str]) -> Optional[datetime.date]:
 
 
 @overload
-def parse_timestamp(timestamp: None) -> None:
+def parse_timestamp(timestamp: None, *, ms: bool = True) -> None:
     ...
 
 
 @overload
-def parse_timestamp(timestamp: float) -> datetime.datetime:
+def parse_timestamp(timestamp: float, *, ms: bool = True) -> datetime.datetime:
     ...
 
 
 @overload
-def parse_timestamp(timestamp: Optional[float]) -> Optional[datetime.datetime]:
+def parse_timestamp(timestamp: Optional[float], *, ms: bool = True) -> Optional[datetime.datetime]:
     ...
 
 
-def parse_timestamp(timestamp: Optional[float]) -> Optional[datetime.datetime]:
+def parse_timestamp(timestamp: Optional[float], *, ms: bool = True) -> Optional[datetime.datetime]:
     if timestamp:
-        return datetime.datetime.fromtimestamp(timestamp / 1000.0, tz=datetime.timezone.utc)
+        if ms:
+            timestamp /= 1000
+        return datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc)
 
 
 def copy_doc(original: Callable[..., Any]) -> Callable[[T], T]:
@@ -437,6 +442,61 @@ def oauth_url(
     if state is not MISSING:
         url += f'&{urlencode({"state": state})}'
     return url
+
+
+def snowflake_worker_id(id: int, /) -> int:
+    """Returns the worker ID of the given snowflake
+
+    .. versionadded:: 2.1
+
+    Parameters
+    -----------
+    id: :class:`int`
+        The snowflake ID.
+
+    Returns
+    --------
+    :class:`int`
+        The worker ID used to generate the snowflake.
+    """
+    return (id >> 17) & 0x1F
+
+
+def snowflake_process_id(id: int, /) -> int:
+    """Returns the process ID of the given snowflake
+
+    .. versionadded:: 2.1
+
+    Parameters
+    -----------
+    id: :class:`int`
+        The snowflake ID.
+
+    Returns
+    --------
+    :class:`int`
+        The process ID used to generate the snowflake.
+    """
+    return (id >> 12) & 0x1F
+
+
+def snowflake_increment(id: int, /) -> int:
+    """Returns the increment of the given snowflake.
+    For every generated ID on that process, this number is incremented.
+
+    .. versionadded:: 2.1
+
+    Parameters
+    -----------
+    id: :class:`int`
+        The snowflake ID.
+
+    Returns
+    --------
+    :class:`int`
+        The increment of current snowflake.
+    """
+    return id & 0xFFF
 
 
 def snowflake_time(id: int, /) -> datetime.datetime:

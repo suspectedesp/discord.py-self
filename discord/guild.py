@@ -55,7 +55,7 @@ from .role import Role
 from .member import Member, VoiceState
 from .emoji import Emoji
 from .errors import ClientException, InvalidData
-from .permissions import PermissionOverwrite
+from .permissions import Permissions, PermissionOverwrite
 from .colour import Colour
 from .errors import ClientException
 from .channel import *
@@ -116,7 +116,6 @@ if TYPE_CHECKING:
         Thread as ThreadPayload,
     )
     from .types.voice import BaseVoiceState as VoiceStatePayload
-    from .permissions import Permissions
     from .channel import VoiceChannel, StageChannel, TextChannel, ForumChannel, CategoryChannel
     from .template import Template
     from .webhook import Webhook
@@ -1494,7 +1493,7 @@ class Guild(Hashable):
         self,
         name: str,
         channel_type: Literal[ChannelType.directory],
-        overwrites: Mapping[Union[Role, Member], PermissionOverwrite] = ...,
+        overwrites: Mapping[Union[Role, Member, Object], PermissionOverwrite] = ...,
         category: Optional[Snowflake] = ...,
         **options: Any,
     ) -> Coroutine[Any, Any, DirectoryChannelPayload]:
@@ -1942,7 +1941,7 @@ class Guild(Hashable):
         category: Optional[CategoryChannel] = None,
         position: int = MISSING,
         topic: str = MISSING,
-        overwrites: Mapping[Union[Role, Member], PermissionOverwrite] = MISSING,
+        overwrites: Mapping[Union[Role, Member, Object], PermissionOverwrite] = MISSING,
     ) -> DirectoryChannel:
         """|coro|
 
@@ -2683,6 +2682,7 @@ class Guild(Hashable):
         with_mutual_guilds: bool = True,
         with_mutual_friends_count: bool = False,
         with_mutual_friends: bool = True,
+        friend_token: str = MISSING,
     ) -> MemberProfile:
         """|coro|
 
@@ -2702,15 +2702,13 @@ class Guild(Hashable):
             This fills in :attr:`.MemberProfile.mutual_friends_count`.
         with_mutual_friends: :class:`bool`
             Whether to fetch mutual friends.
-            This fills in :attr:`.MemberProfile.mutual_friends` and :attr:`.MemberProfile.mutual_friends_count`,
-            but requires an extra API call.
+            This fills in :attr:`.MemberProfile.mutual_friends` and :attr:`.MemberProfile.mutual_friends_count`.
 
         Raises
         -------
         NotFound
             A user with this ID does not exist.
-        Forbidden
-            You do not have a mutual with this user, and and the user is not a bot.
+            You do not have a mutual with this user and the user is not a bot.
         HTTPException
             Fetching the profile failed.
         InvalidData
@@ -2727,16 +2725,15 @@ class Guild(Hashable):
             self.id,
             with_mutual_guilds=with_mutual_guilds,
             with_mutual_friends_count=with_mutual_friends_count,
+            with_mutual_friends=with_mutual_friends,
+            friend_token=friend_token or None,
         )
         if 'guild_member_profile' not in data:
             raise InvalidData('Member is not in this guild')
         if 'guild_member' not in data:
             raise InvalidData('Member has blocked you')
-        mutual_friends = None
-        if with_mutual_friends and not data['user'].get('bot', False):
-            mutual_friends = await state.http.get_mutual_friends(member_id)
 
-        return MemberProfile(state=state, data=data, mutual_friends=mutual_friends, guild=self)
+        return MemberProfile(state=state, data=data, guild=self)
 
     async def fetch_ban(self, user: Snowflake) -> BanEntry:
         """|coro|
@@ -2954,7 +2951,7 @@ class Guild(Hashable):
         attachment_filenames: Collection[str] = MISSING,
         attachment_extensions: Collection[str] = MISSING,
         application_commands: Collection[Snowflake] = MISSING,
-        oldest_first: bool = False,
+        oldest_first: bool = MISSING,
         most_relevant: bool = False,
     ) -> AsyncIterator[Message]:
         """Returns an :term:`asynchronous iterator` that enables searching the guild's messages.
@@ -2993,9 +2990,7 @@ class Guild(Hashable):
         limit: Optional[:class:`int`]
             The number of messages to retrieve.
             If ``None``, retrieves every message in the results. Note, however,
-            that this would make it a slow operation. Additionally, note that the
-            search API has a maximum pagination offset of 5000 (subject to change),
-            so a limit of over 5000 or ``None`` may eventually raise an exception.
+            that this would make it a slow operation.
         offset: :class:`int`
             The pagination offset to start at.
         before: Union[:class:`abc.Snowflake`, :class:`datetime.datetime`]
@@ -3038,17 +3033,19 @@ class Guild(Hashable):
         application_commands: List[:class:`abc.ApplicationCommand`]
             The used application commands to filter by.
         oldest_first: :class:`bool`
-            Whether to return the oldest results first.
+            Whether to return the oldest results first. Defaults to ``True`` if
+            ``before`` is specified, otherwise ``False``. Ignored when ``most_relevant`` is set.
         most_relevant: :class:`bool`
-            Whether to sort the results by relevance. Using this with ``oldest_first``
-            will return the least relevant results first.
+            Whether to sort the results by relevance. Limits pagination to 9975 entries.
 
         Raises
         ------
-        Forbidden
-            You do not have permissions to search the channel's messages.
-        HTTPException
+        ~discord.HTTPException
             The request to search messages failed.
+        TypeError
+            Provided both ``before`` and ``after`` when ``most_relevant`` is set.
+        ValueError
+            Could not resolve the channel's guild ID.
 
         Yields
         -------
